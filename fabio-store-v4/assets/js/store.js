@@ -78,20 +78,33 @@ function renderProducts(){
   const wrap=document.getElementById('products');
   if(!wrap) return;
   const list=getFilteredProducts();
+
   if(!allProducts.length){
     wrap.innerHTML='<div class="empty">Nenhum produto cadastrado ainda. Cadastre no painel admin.</div>';
     return;
   }
+
   if(!list.length){
     wrap.innerHTML='<div class="empty">Nenhum produto encontrado com esse filtro.</div>';
     return;
   }
+
   wrap.innerHTML=list.map(p=>{
-    const payload = JSON.stringify({id:p.id,nome:p.nome,preco:p.preco,imagem_url:p.imagem_url,estoque:p.estoque}).replaceAll("'","&apos;");
+    const payload = JSON.stringify({
+      id:p.id,
+      nome:p.nome,
+      preco:p.preco,
+      imagem_url:p.imagem_url,
+      estoque:p.estoque
+    }).replaceAll("'","&apos;");
+
     return `<article class="card product-card">
       <div class="product-img">${p.imagem_url?`<img src="${escapeHtml(p.imagem_url)}" alt="${escapeHtml(p.nome)}">`:'<span class="muted">Sem imagem</span>'}</div>
       <div class="card-body">
-        <div class="card-top"><span class="badge">${escapeHtml(p.categoria||'Produto')}</span>${Number(p.estoque)<1?'<span class="stock out">Sem estoque</span>':'<span class="stock">Em estoque</span>'}</div>
+        <div class="card-top">
+          <span class="badge">${escapeHtml(p.categoria||'Produto')}</span>
+          ${Number(p.estoque)<1?'<span class="stock out">Sem estoque</span>':'<span class="stock">Em estoque</span>'}
+        </div>
         <h3>${escapeHtml(p.nome)}</h3>
         <p class="muted line-clamp">${escapeHtml(p.descricao||'')}</p>
         <div class="price">${money(p.preco)}</div>
@@ -103,26 +116,98 @@ function renderProducts(){
 }
 
 function renderCart(){
-  const wrap=document.getElementById('cartItems'); if(!wrap) return;
+  const wrap=document.getElementById('cartItems');
+  if(!wrap) return;
+
   const cart=getCart();
-  if(!cart.length){wrap.innerHTML='<div class="empty">Seu carrinho está vazio.</div>'; document.getElementById('cartTotal').textContent=money(0); return;}
+
+  if(!cart.length){
+    wrap.innerHTML='<div class="empty">Seu carrinho está vazio.</div>';
+    document.getElementById('cartTotal').textContent=money(0);
+    return;
+  }
+
   let total=0;
-  wrap.innerHTML=cart.map((i,idx)=>{total+=i.preco*i.quantidade;return `<div class="panel cart-item"><strong>${escapeHtml(i.nome)}</strong><p class="muted">${money(i.preco)} x ${i.quantidade}</p><div class="actions"><button class="btn ghost" onclick="changeQty(${idx},-1)">-</button><button class="btn ghost" onclick="changeQty(${idx},1)">+</button><button class="btn danger" onclick="removeItem(${idx})">Remover</button></div></div>`}).join('');
+  wrap.innerHTML=cart.map((i,idx)=>{
+    total+=Number(i.preco)*Number(i.quantidade);
+    return `<div class="panel cart-item">
+      <strong>${escapeHtml(i.nome)}</strong>
+      <p class="muted">${money(i.preco)} x ${i.quantidade}</p>
+      <div class="actions">
+        <button class="btn ghost" onclick="changeQty(${idx},-1)">-</button>
+        <button class="btn ghost" onclick="changeQty(${idx},1)">+</button>
+        <button class="btn danger" onclick="removeItem(${idx})">Remover</button>
+      </div>
+    </div>`;
+  }).join('');
+
   document.getElementById('cartTotal').textContent=money(total);
 }
-function changeQty(idx,delta){ const cart=getCart(); cart[idx].quantidade+=delta; if(cart[idx].quantidade<1) cart.splice(idx,1); saveCart(cart); renderCart(); }
-function removeItem(idx){ const cart=getCart(); cart.splice(idx,1); saveCart(cart); renderCart(); }
+
+function changeQty(idx,delta){
+  const cart=getCart();
+  cart[idx].quantidade+=delta;
+  if(cart[idx].quantidade<1) cart.splice(idx,1);
+  saveCart(cart);
+  renderCart();
+}
+
+function removeItem(idx){
+  const cart=getCart();
+  cart.splice(idx,1);
+  saveCart(cart);
+  renderCart();
+}
+
+async function baixarEstoque(cart){
+  for (const item of cart) {
+    const { data: produto, error: produtoError } = await supabaseClient
+      .from('produtos')
+      .select('estoque')
+      .eq('id', item.id)
+      .single();
+
+    if (produtoError || !produto) {
+      console.warn('Não foi possível buscar estoque do produto:', item.id, produtoError);
+      continue;
+    }
+
+    const novoEstoque = Math.max(
+      0,
+      Number(produto.estoque || 0) - Number(item.quantidade || 0)
+    );
+
+    const { error: updateError } = await supabaseClient
+      .from('produtos')
+      .update({
+        estoque: novoEstoque,
+        ativo: novoEstoque > 0
+      })
+      .eq('id', item.id);
+
+    if (updateError) {
+      console.warn('Não foi possível baixar estoque do produto:', item.id, updateError);
+    }
+  }
+}
+
 async function checkout(e){
   e.preventDefault();
+
   const button = e.target.querySelector('button[type=submit], button:not([type])');
   const cart=getCart();
+
   if(!cart.length) return alert('Carrinho vazio.');
 
-  if(button){ button.disabled = true; button.textContent = 'Gerando pagamento...'; }
+  if(button){
+    button.disabled = true;
+    button.textContent = 'Gerando pagamento...';
+  }
 
   try{
     const fd=new FormData(e.target);
     const total=cart.reduce((s,i)=>s+Number(i.preco)*Number(i.quantidade),0);
+
     const pedido={
       cliente_nome:fd.get('nome'),
       cliente_email:fd.get('email'),
@@ -133,7 +218,12 @@ async function checkout(e){
       status:'aguardando_pagamento'
     };
 
-    const {data,error}=await supabaseClient.from('pedidos').insert(pedido).select().single();
+    const {data,error}=await supabaseClient
+      .from('pedidos')
+      .insert(pedido)
+      .select()
+      .single();
+
     if(error) throw new Error('Erro ao criar pedido: '+error.message);
 
     const itens=cart.map(i=>({
@@ -144,8 +234,14 @@ async function checkout(e){
       preco_unitario:i.preco,
       subtotal:Number(i.preco)*Number(i.quantidade)
     }));
-    const res=await supabaseClient.from('itens_pedido').insert(itens);
+
+    const res=await supabaseClient
+      .from('itens_pedido')
+      .insert(itens);
+
     if(res.error) throw new Error('Pedido criado, mas erro nos itens: '+res.error.message);
+
+    await baixarEstoque(cart);
 
     const prefRes = await fetch('/.netlify/functions/create-preference', {
       method: 'POST',
@@ -167,21 +263,33 @@ async function checkout(e){
     });
 
     const pref = await prefRes.json();
-    if(!prefRes.ok) throw new Error(pref.error || 'Erro ao criar pagamento no Mercado Pago.');
+
+    if(!prefRes.ok) {
+      throw new Error(pref.error || 'Erro ao criar pagamento no Mercado Pago.');
+    }
 
     localStorage.removeItem(cartKey);
     updateCartCount();
+
     window.location.href = pref.init_point || pref.sandbox_init_point;
   }catch(err){
     alert(err.message || 'Erro ao finalizar pedido.');
-    if(button){ button.disabled = false; button.textContent = 'Pagar com Pix ou Cartão'; }
+
+    if(button){
+      button.disabled = false;
+      button.textContent = 'Pagar com Pix ou Cartão';
+    }
   }
 }
+
 document.addEventListener('DOMContentLoaded',()=>{
   updateCartCount();
   loadProducts();
   renderCart();
+
   document.getElementById('searchInput')?.addEventListener('input', renderProducts);
   document.getElementById('sortSelect')?.addEventListener('change', renderProducts);
-  const f=document.getElementById('checkoutForm'); if(f) f.addEventListener('submit',checkout);
+
+  const f=document.getElementById('checkoutForm');
+  if(f) f.addEventListener('submit',checkout);
 });
