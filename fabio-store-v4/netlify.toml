@@ -1,7 +1,0 @@
-[functions]
-  directory = "netlify/functions"
-
-[[redirects]]
-  from = "/admin"
-  to = "/admin/login.html"
-  status = 200
